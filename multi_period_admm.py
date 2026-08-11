@@ -40,6 +40,15 @@ def generate_synthetic_market_data(
     return pd.DataFrame(returns, index=dates, columns=columns)
 
 
+def estimate_window(window: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """EWMA mean and Ledoit-Wolf covariance for one lookback window."""
+    span = max(2, len(window) // 2)
+    mu = window.ewm(span=span, adjust=False).mean().iloc[-1].to_numpy()
+    covariance = LedoitWolf().fit(window.to_numpy()).covariance_
+    covariance = (covariance + covariance.T) / 2.0
+    return mu, covariance + 1e-10 * np.eye(covariance.shape[0])
+
+
 def estimate_parameters(
     returns: pd.DataFrame, lookback: int = LOOKBACK
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -50,17 +59,11 @@ def estimate_parameters(
     n_periods, n_assets = returns.shape
     mu_sequence = np.empty((n_periods - lookback, n_assets))
     sigma_sequence = np.empty((n_periods - lookback, n_assets, n_assets))
-    estimator = LedoitWolf()
-    identity = np.eye(n_assets)
 
     for period in range(lookback, n_periods):
-        window = returns.iloc[period - lookback : period]
-        mu_sequence[period - lookback] = (
-            window.ewm(span=max(2, lookback // 2), adjust=False).mean().iloc[-1].to_numpy()
-        )
-        covariance = estimator.fit(window.to_numpy()).covariance_
-        covariance = (covariance + covariance.T) / 2.0
-        sigma_sequence[period - lookback] = covariance + 1e-10 * identity
+        mu, covariance = estimate_window(returns.iloc[period - lookback : period])
+        mu_sequence[period - lookback] = mu
+        sigma_sequence[period - lookback] = covariance
 
     return mu_sequence, sigma_sequence
 
