@@ -20,6 +20,9 @@ HORIZON = 50
 # Risk aversion is scaled to daily data: expected returns are order 1e-3 while portfolio
 # variance is order 1e-6, so a small gamma degenerates to a single-asset corner solution.
 GAMMA = 1000.0
+# Penalty for the standalone smoke run only. 0.01 in return units is the cost of trading at
+# 100 bps, so it is deliberately stricter than any cost charged here. The backtest derives its
+# penalty from the cost it actually charges; see lambda_from_cost.
 LAMBDA = 0.01
 RHO = 1.0
 TOLERANCE = 1e-4
@@ -174,6 +177,99 @@ def admm_multi_period_optimizer(
             break
 
     return weights, trades, residual_trace
+
+
+def lambda_from_cost(cost_bps: float) -> float:
+    """L1 penalty matching a linear cost of `cost_bps` per unit traded notional.
+
+    The penalty and the charged cost are then the same number in return units, so the optimizer
+    is penalized for the cost it actually pays rather than an unrelated constant.
+    """
+    if cost_bps < 0.0:
+        raise ValueError("cost_bps cannot be negative")
+    return cost_bps / 10_000.0
+
+
+def solve_target_weights(
+    mu: np.ndarray,
+    covariance: np.ndarray,
+    current_weights: np.ndarray,
+    horizon: int = 1,
+    gamma: float = GAMMA,
+    lambda_: float = 0.0,
+    max_iter: int = 2000,
+    tolerance: float = 1e-6,
+) -> np.ndarray:
+    """Weights for the next period only.
+
+    Parameters are held constant across the horizon, because future estimates do not exist at
+    decision time. Only the first period of the solved path is returned.
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be at least 1")
+    weights, _, _ = admm_multi_period_optimizer(
+        np.tile(mu, (horizon, 1)),
+        np.tile(covariance, (horizon, 1, 1)),
+        current_weights,
+        gamma=gamma,
+        lambda_=lambda_,
+        max_iter=max_iter,
+        tolerance=tolerance,
+    )
+    return weights[0]
+
+
+def annualized_volatility(
+    weights: np.ndarray, covariance: np.ndarray, periods_per_year: int = 252
+) -> float:
+    """Annualized volatility of a fixed weight vector under one covariance matrix."""
+    variance = float(weights @ covariance @ weights)
+    return float(np.sqrt(max(variance, 0.0) * periods_per_year))
+
+
+def calibrate_gamma(
+    mu: np.ndarray,
+    covariance: np.ndarray,
+    target_volatility: float,
+    current_weights: np.ndarray | None = None,
+    periods_per_year: int = 252,
+    bounds: tuple[float, float] = (1e-2, 1e8),
+    max_iter: int = 40,
+) -> float:
+    """Smallest risk aversion whose single-period solution hits `target_volatility`.
+
+    Portfolio volatility falls as risk aversion rises, so this bisects in log space. A target
+    outside the reachable range returns the corresponding bound, since no risk aversion produces
+    a portfolio more or less volatile than the extremes of the feasible set.
+    """
+    if target_volatility <= 0.0:
+        raise ValueError("target_volatility must be positive")
+    low, high = bounds
+    if not 0.0 < low < high:
+        raise ValueError("bounds must satisfy 0 < low < high")
+
+    n_assets = covariance.shape[0]
+    if current_weights is None:
+        current_weights = np.full(n_assets, 1.0 / n_assets)
+
+    def volatility_at(gamma: float) -> float:
+        weights = solve_target_weights(mu, covariance, current_weights, gamma=gamma)
+        return annualized_volatility(weights, covariance, periods_per_year)
+
+    if volatility_at(low) <= target_volatility:
+        return low
+    if volatility_at(high) >= target_volatility:
+        return high
+
+    for _ in range(max_iter):
+        middle = float(np.sqrt(low * high))
+        if volatility_at(middle) > target_volatility:
+            low = middle
+        else:
+            high = middle
+        if high / low < 1.01:
+            break
+    return float(np.sqrt(low * high))
 
 
 def run_baseline() -> pd.Series:

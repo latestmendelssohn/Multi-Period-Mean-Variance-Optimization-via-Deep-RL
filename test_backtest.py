@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from backtest import COST_BPS, compare, run_backtest, summarize
-from multi_period_admm import generate_synthetic_market_data
+from multi_period_admm import generate_synthetic_market_data, lambda_from_cost
 
 RETURNS = generate_synthetic_market_data(n_assets=6, n_days=140)
 LOOKBACK = 40
@@ -163,6 +163,60 @@ class TestCompare(unittest.TestCase):
         self.assertEqual(len(table), 4)
         self.assertTrue((table["periods"] == 8).all())
         self.assertTrue(np.isfinite(table["total_net_return"].to_numpy()).all())
+
+
+class TestCostConsistentPenalty(unittest.TestCase):
+    def test_default_penalty_equals_the_charged_cost(self):
+        derived = _run("multi_period", cost_bps=25.0)
+        explicit = _run("multi_period", cost_bps=25.0, lambda_=lambda_from_cost(25.0))
+        np.testing.assert_allclose(
+            derived["turnover"].to_numpy(), explicit["turnover"].to_numpy(), atol=1e-12
+        )
+
+    def test_explicit_penalty_overrides_the_default(self):
+        derived = _run("multi_period", cost_bps=10.0)
+        overridden = _run("multi_period", cost_bps=10.0, lambda_=0.05)
+        self.assertLessEqual(
+            overridden["turnover"].mean(), derived["turnover"].mean()
+        )
+
+    def test_rejects_negative_penalty(self):
+        with self.assertRaises(ValueError):
+            _run("multi_period", lambda_=-0.01)
+
+
+class TestVolatilityTarget(unittest.TestCase):
+    def test_target_changes_the_solution(self):
+        fixed = _run("multi_period")
+        targeted = _run("multi_period", target_volatility=0.05)
+        self.assertFalse(
+            np.allclose(fixed["turnover"].to_numpy(), targeted["turnover"].to_numpy())
+        )
+
+    def test_target_does_not_use_future_data(self):
+        baseline = _run("multi_period", target_volatility=0.05)
+        tampered_returns = RETURNS.copy()
+        tampered_returns.iloc[-3:] = 0.5
+        tampered = run_backtest(
+            tampered_returns,
+            "multi_period",
+            lookback=LOOKBACK,
+            periods=PERIODS,
+            horizon=3,
+            target_volatility=0.05,
+        )
+        np.testing.assert_allclose(
+            baseline["turnover"].to_numpy()[:-3],
+            tampered["turnover"].to_numpy()[:-3],
+            atol=1e-12,
+        )
+
+    def test_benchmarks_ignore_the_target(self):
+        fixed = _run("equal_weight")
+        targeted = _run("equal_weight", target_volatility=0.05)
+        np.testing.assert_allclose(
+            fixed["net_return"].to_numpy(), targeted["net_return"].to_numpy(), atol=1e-12
+        )
 
 
 if __name__ == "__main__":
