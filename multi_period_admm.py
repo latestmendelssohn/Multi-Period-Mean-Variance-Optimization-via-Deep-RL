@@ -1,173 +1,203 @@
+"""Multi-period mean-variance optimization with an L1 turnover penalty.
+
+Estimators: EWMA expected returns, Ledoit-Wolf covariance.
+Solver: ADMM with simplex projection for weights and soft-thresholding for trades.
+
+Run `python multi_period_admm.py` for a deterministic smoke run on synthetic data.
+"""
+
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 from sklearn.covariance import LedoitWolf
-import matplotlib.pyplot as plt
 
-# ==========================================
-# 1. NATURAL PARAMETER ESTIMATION (STATISTICS)
-# ==========================================
-def generate_synthetic_market_data(n_assets=20, n_days=1000):
-    """Generates synthetic correlated asset returns for out-of-the-box testing."""
-    np.random.seed(42)
-    # Create a base covariance structure
-    base_cov = np.random.randn(n_assets, n_assets)
-    base_cov = base_cov @ base_cov.T / n_assets 
-    
-    # Generate multivariate normal returns
-    returns = np.random.multivariate_normal(
-        mean=np.linspace(0.0001, 0.0005, n_assets), 
-        cov=base_cov * 0.0001, 
-        size=n_days
-    )
-    return pd.DataFrame(returns, columns=[f'Asset_{i}' for i in range(n_assets)])
+SEED = 42
+N_ASSETS = 20
+N_DAYS = 500
+LOOKBACK = 60
+HORIZON = 50
+# Risk aversion is scaled to daily data: expected returns are order 1e-3 while portfolio
+# variance is order 1e-6, so a small gamma degenerates to a single-asset corner solution.
+GAMMA = 1000.0
+LAMBDA = 0.01
+RHO = 1.0
+TOLERANCE = 1e-4
 
-def estimate_parameters_naturally(df_returns, lookback=60):
+
+def generate_synthetic_market_data(
+    n_assets: int = N_ASSETS, n_days: int = N_DAYS, seed: int = SEED
+) -> pd.DataFrame:
+    """Deterministic correlated returns from a linear factor model. Test fixture only."""
+    rng = np.random.default_rng(seed)
+    n_factors = min(3, n_assets)
+    factor_returns = rng.normal(0.0002, 0.01, size=(n_days, n_factors))
+    loadings = rng.normal(0.0, 0.5, size=(n_assets, n_factors))
+    idiosyncratic = rng.normal(0.0, 0.006, size=(n_days, n_assets))
+    returns = factor_returns @ loadings.T + idiosyncratic
+    dates = pd.date_range("2020-01-01", periods=n_days, freq="B")
+    columns = [f"Asset_{index}" for index in range(n_assets)]
+    return pd.DataFrame(returns, index=dates, columns=columns)
+
+
+def estimate_parameters(
+    returns: pd.DataFrame, lookback: int = LOOKBACK
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rolling EWMA means and Ledoit-Wolf covariances, one per period after the window."""
+    if lookback < 2 or lookback >= len(returns):
+        raise ValueError("lookback must be at least 2 and smaller than the number of rows")
+
+    n_periods, n_assets = returns.shape
+    mu_sequence = np.empty((n_periods - lookback, n_assets))
+    sigma_sequence = np.empty((n_periods - lookback, n_assets, n_assets))
+    estimator = LedoitWolf()
+    identity = np.eye(n_assets)
+
+    for period in range(lookback, n_periods):
+        window = returns.iloc[period - lookback : period]
+        mu_sequence[period - lookback] = (
+            window.ewm(span=max(2, lookback // 2), adjust=False).mean().iloc[-1].to_numpy()
+        )
+        covariance = estimator.fit(window.to_numpy()).covariance_
+        covariance = (covariance + covariance.T) / 2.0
+        sigma_sequence[period - lookback] = covariance + 1e-10 * identity
+
+    return mu_sequence, sigma_sequence
+
+
+def project_simplex(vector: np.ndarray) -> np.ndarray:
+    """Euclidean projection onto {x : sum(x) = 1, x >= 0}."""
+    vector = np.asarray(vector, dtype=float)
+    if vector.ndim != 1 or vector.size == 0:
+        raise ValueError("vector must be a non-empty one-dimensional array")
+    sorted_values = np.sort(vector)[::-1]
+    cumulative = np.cumsum(sorted_values)
+    active = np.nonzero(sorted_values * np.arange(1, vector.size + 1) > cumulative - 1.0)[0]
+    if active.size == 0:
+        raise ValueError("simplex projection failed to find an active set")
+    threshold = (cumulative[active[-1]] - 1.0) / (active[-1] + 1.0)
+    return np.maximum(vector - threshold, 0.0)
+
+
+def soft_threshold(vector: np.ndarray, threshold: float) -> np.ndarray:
+    """Proximal operator of the L1 norm."""
+    if threshold < 0.0:
+        raise ValueError("threshold cannot be negative")
+    return np.sign(vector) * np.maximum(np.abs(vector) - threshold, 0.0)
+
+
+def admm_multi_period_optimizer(
+    mu_sequence: np.ndarray,
+    sigma_sequence: np.ndarray,
+    initial_weights: np.ndarray,
+    gamma: float = GAMMA,
+    lambda_: float = LAMBDA,
+    rho: float = RHO,
+    max_iter: int = 8000,
+    tolerance: float = TOLERANCE,
+) -> tuple[np.ndarray, np.ndarray, list[tuple[float, float]]]:
+    """Solve the multi-period problem and return weights, trades, and the residual trace.
+
+    Convergence is not guaranteed within `max_iter`; check the last residual pair.
     """
-    Estimates parameters:
-    - Expected Returns (Mu): Exponentially Weighted Moving Average (EWMA)
-    - Covariance (Sigma): Ledoit-Wolf Shrinkage (Guarantees Positive Definiteness)
-    """
-    T, N = df_returns.shape
-    mu_seq = np.zeros((T - lookback, N))
-    sigma_seq = np.zeros((T - lookback, N, N))
-    
-    lw = LedoitWolf()
-    print(f"Estimating rolling parameters using {lookback}-day windows and Ledoit-Wolf Shrinkage...")
-    
-    for i in range(lookback, T):
-        window_returns = df_returns.iloc[i-lookback:i]
-        
-        # 1. EWMA for Expected Returns
-        ewma_returns = window_returns.ewm(span=lookback//2).mean().iloc[-1].values
-        mu_seq[i-lookback] = ewma_returns
-        
-        # 2. Ledoit-Wolf Shrinkage for Covariance 
-        sigma_seq[i-lookback] = lw.fit(window_returns).covariance_
-        
-    return mu_seq, sigma_seq
+    mu_sequence = np.asarray(mu_sequence, dtype=float)
+    sigma_sequence = np.asarray(sigma_sequence, dtype=float)
+    initial_weights = np.asarray(initial_weights, dtype=float)
+    if mu_sequence.ndim != 2:
+        raise ValueError("mu_sequence must have shape (periods, assets)")
+    periods, n_assets = mu_sequence.shape
+    if sigma_sequence.shape != (periods, n_assets, n_assets):
+        raise ValueError("sigma_sequence must have shape (periods, assets, assets)")
+    if initial_weights.shape != (n_assets,):
+        raise ValueError("initial_weights must have shape (assets,)")
+    if not np.isclose(initial_weights.sum(), 1.0) or np.any(initial_weights < 0.0):
+        raise ValueError("initial_weights must be a long-only simplex vector")
+    if gamma <= 0.0 or lambda_ < 0.0 or rho <= 0.0:
+        raise ValueError("gamma and rho must be positive; lambda_ cannot be negative")
 
-# ==========================================
-# 2. EXACT MATHEMATICAL OPTIMIZATION (ADMM)
-# ==========================================
-def project_simplex(v):
-    """Exact O(N log N) projection onto the probability simplex: sum(x)=1, x>=0."""
-    n = v.shape[0]
-    u = np.sort(v)[::-1]
-    cssv = np.cumsum(u)
-    rho = np.nonzero(u * np.arange(1, n+1) > (cssv - 1))[0][-1]
-    theta = (cssv[rho] - 1) / (rho + 1.0)
-    return np.maximum(v - theta, 0)
+    identity = np.eye(n_assets)
+    for covariance in sigma_sequence:
+        if not np.allclose(covariance, covariance.T, atol=1e-10):
+            raise ValueError("covariance matrices must be symmetric")
+        if np.linalg.eigvalsh(covariance).min() <= 0.0:
+            raise ValueError("covariance matrices must be positive definite")
 
-def admm_multi_period_optimizer(mu_seq, sigma_seq, x0, gamma=2.0, lamda=0.005, rho=1.0, max_iter=100, tol=1e-3):
-    """
-    Solves the Multi-Period L1-Penalized Markowitz problem.
-    """
-    T, n = mu_seq.shape
-    x = np.ones((T, n)) / n  # Primal variable (Weights)
-    u = np.zeros((T, n))     # Auxiliary variable (Trades)
-    y = np.zeros((T, n))     # Dual variable (Multipliers)
-    
-    Q_inv = np.zeros((T, n, n))
-    I = np.eye(n)
-    for t in range(T):
-        Q = gamma * sigma_seq[t] + (2 * rho * I if t < T - 1 else rho * I)
-        Q_inv[t] = np.linalg.inv(Q)
+    weights = np.tile(initial_weights, (periods, 1))
+    trades = np.zeros((periods, n_assets))
+    dual = np.zeros((periods, n_assets))
+    system_inverses = []
+    for period, covariance in enumerate(sigma_sequence):
+        future_penalty = 2.0 * rho if period < periods - 1 else rho
+        system_inverses.append(np.linalg.inv(gamma * covariance + future_penalty * identity))
 
-    print(f"\nBeginning ADMM Iterations for {T} periods...")
+    residual_trace: list[tuple[float, float]] = []
+    for _ in range(max_iter):
+        old_trades = trades.copy()
+        for period in range(periods):
+            previous = initial_weights if period == 0 else weights[period - 1]
+            right_hand_side = mu_sequence[period] + rho * (
+                previous + trades[period] - dual[period] / rho
+            )
+            if period < periods - 1:
+                right_hand_side += rho * (
+                    weights[period + 1] - trades[period + 1] + dual[period + 1] / rho
+                )
+            weights[period] = project_simplex(system_inverses[period] @ right_hand_side)
 
-    for k in range(max_iter):
-        u_old = np.copy(u)
-        
-        # Block 1: x-update
-        for t in range(T):
-            x_prev = x[t-1] if t > 0 else x0
-            c = mu_seq[t] + rho * (x_prev + u[t] - y[t]/rho)
-            if t < T - 1:
-                c += rho * (x[t+1] - u[t+1] + y[t+1]/rho)
-            x[t] = project_simplex(Q_inv[t] @ c)
-            
-        # Block 2: u-update (Soft-Thresholding Proximal Mapping)
-        for t in range(T):
-            x_prev = x[t-1] if t > 0 else x0
-            v_t = x[t] - x_prev + y[t]/rho
-            kappa = lamda / rho
-            u[t] = np.sign(v_t) * np.maximum(np.abs(v_t) - kappa, 0)
-            
-        # Block 3: y-update
-        for t in range(T):
-            x_prev = x[t-1] if t > 0 else x0
-            y[t] += rho * (x[t] - x_prev - u[t])
-            
-        # Convergence Check
-        primal_res = np.sqrt(sum(np.linalg.norm(x[t] - (x[t-1] if t > 0 else x0) - u[t])**2 for t in range(T)))
-        dual_res = np.sqrt(sum(np.linalg.norm(rho * (u[t] - u_old[t]))**2 for t in range(T)))
-        
-        if (k+1) % 10 == 0:
-            print(f"Iter {k+1:3d} | Primal Res: {primal_res:.4f} | Dual Res: {dual_res:.4f}")
-            
-        if primal_res < tol and dual_res < tol:
-            print(f"ADMM Converged EXACTLY at iteration {k+1}")
+        for period in range(periods):
+            previous = initial_weights if period == 0 else weights[period - 1]
+            trades[period] = soft_threshold(
+                weights[period] - previous + dual[period] / rho, lambda_ / rho
+            )
+
+        for period in range(periods):
+            previous = initial_weights if period == 0 else weights[period - 1]
+            dual[period] += rho * (weights[period] - previous - trades[period])
+
+        primal = np.sqrt(
+            sum(
+                np.linalg.norm(
+                    weights[period]
+                    - (initial_weights if period == 0 else weights[period - 1])
+                    - trades[period]
+                )
+                ** 2
+                for period in range(periods)
+            )
+        )
+        dual_residual = rho * np.linalg.norm(trades - old_trades)
+        residual_trace.append((float(primal), float(dual_residual)))
+        if primal < tolerance and dual_residual < tolerance:
             break
 
-    return x, u
+    return weights, trades, residual_trace
 
-# ==========================================
-# 3. MAIN EXECUTION & VISUALIZATION
-# ==========================================
-if __name__ == "__main__":
-    # 1. Get Data
-    df_returns = generate_synthetic_market_data(n_assets=20, n_days=500)
-    
-    # 2. Estimate Parameters
-    mu_est, sigma_est = estimate_parameters_naturally(df_returns, lookback=60)
-    mu_target = mu_est[-50:]
-    sigma_target = sigma_est[-50:]
-    
-    # 3. Initial Portfolio
-    x_initial = np.ones(20) / 20 
 
-    # 4. Run ADMM Engine
-    optimal_weights, optimal_trades = admm_multi_period_optimizer(
-        mu_seq=mu_target, 
-        sigma_seq=sigma_target, 
-        x0=x_initial, 
-        gamma=5.0,    
-        lamda=0.01    
+def run_baseline() -> pd.Series:
+    """Deterministic end-to-end run on synthetic data. Returns the summary metrics."""
+    returns = generate_synthetic_market_data()
+    mu_sequence, sigma_sequence = estimate_parameters(returns)
+    mu_target = mu_sequence[-HORIZON:]
+    sigma_target = sigma_sequence[-HORIZON:]
+    initial_weights = np.full(mu_target.shape[1], 1.0 / mu_target.shape[1])
+
+    weights, trades, residual_trace = admm_multi_period_optimizer(
+        mu_target, sigma_target, initial_weights
+    )
+    final_primal, final_dual = residual_trace[-1]
+    return pd.Series(
+        {
+            "periods_optimized": weights.shape[0],
+            "assets": weights.shape[1],
+            "iterations": len(residual_trace),
+            "final_primal_residual": final_primal,
+            "final_dual_residual": final_dual,
+            "zero_trade_fraction": float(np.mean(np.abs(trades) <= 1e-6)),
+            "final_active_positions": int(np.count_nonzero(weights[-1] > 1e-6)),
+            "final_effective_assets": float(1.0 / np.sum(weights[-1] ** 2)),
+        }
     )
 
-    # 5. Evaluate Metrics
-    total_trades = optimal_trades.size
-    zero_trades = np.sum(np.abs(optimal_trades) <= 1e-6)
-    sparsity_pct = (zero_trades / total_trades) * 100
 
-    print("\n--- FINAL EXECUTION METRICS ---")
-    print(f"Total time steps optimized : {mu_target.shape[0]} days")
-    print(f"Total possible asset trades: {total_trades}")
-    print(f"Trades suppressed to 0.0   : {zero_trades}")
-    print(f"Trading Sparsity Achieved  : {sparsity_pct:.2f}%")
-
-    # 6. Extract & Visualize
-    print("\n--- EXTRACTING OPTIMAL WEIGHTS ---")
-    asset_columns = [f'Asset_{i}' for i in range(optimal_weights.shape[1])]
-    df_optimal_weights = pd.DataFrame(optimal_weights, columns=asset_columns)
-    
-    print("\nTarget Portfolio Allocation (Final Day):")
-    final_day_weights = df_optimal_weights.iloc[-1]
-    active_positions = final_day_weights[final_day_weights > 1e-4].sort_values(ascending=False)
-    
-    for asset, weight in active_positions.items():
-        print(f"{asset:<10}: {weight * 100:>5.2f}%")
-
-    try:
-        plt.figure(figsize=(12, 6))
-        active_assets = df_optimal_weights.loc[:, (df_optimal_weights > 1e-4).any(axis=0)]
-        plt.stackplot(active_assets.index, active_assets.T, labels=active_assets.columns, alpha=0.8)
-        plt.title(f"Dynamic Portfolio Allocation over {mu_target.shape[0]} Days (ADMM L1-Penalized)", fontsize=14)
-        plt.xlabel("Time Step (Days)", fontsize=12)
-        plt.ylabel("Capital Allocation Weight", fontsize=12)
-        plt.margins(x=0, y=0)
-        plt.legend(loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0.)
-        plt.tight_layout()
-        plt.show()
-    except Exception as e:
-        print(f"Could not generate plot: {e}")
+if __name__ == "__main__":
+    print(run_baseline())

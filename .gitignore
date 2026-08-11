@@ -1,0 +1,31 @@
+# Local reference archives and extracted reference directories
+ponytail-main.zip
+humanizer-main.zip
+ponytail-main/
+humanizer-main/
+
+# Local working memory and agent config (not project documentation)
+PROGRESS.md
+.kiro/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Jupyter artifacts
+.ipynb_checkpoints/
+
+# Local secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
