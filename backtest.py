@@ -5,6 +5,9 @@ fully invested portfolio, and pays a linear cost on traded notional. All strateg
 an equal-weight position, which is not charged, so the comparison is not distorted by an
 arbitrary initial trade.
 
+By default the L1 penalty inside the objective equals the cost actually charged, so the optimizer
+is not tuned against a cost it never pays. Pass `lambda_` to override that.
+
 Run `python backtest.py` for the comparison table on synthetic data.
 """
 
@@ -15,11 +18,12 @@ import pandas as pd
 
 from multi_period_admm import (
     GAMMA,
-    LAMBDA,
     LOOKBACK,
-    admm_multi_period_optimizer,
+    calibrate_gamma,
     estimate_window,
     generate_synthetic_market_data,
+    lambda_from_cost,
+    solve_target_weights,
 )
 
 COST_BPS = 10.0
@@ -28,44 +32,22 @@ PERIODS_PER_YEAR = 252
 STRATEGIES = ("buy_and_hold", "equal_weight", "single_period", "multi_period")
 
 
-def _solve_target(
-    mu: np.ndarray,
-    covariance: np.ndarray,
-    current_weights: np.ndarray,
-    horizon: int,
-    gamma: float,
-    lambda_: float,
-) -> np.ndarray:
-    """Target weights for the next period.
-
-    Parameters are held constant across the horizon because future estimates are not
-    available at decision time. Only the first period of the solved path is executed.
-    """
-    mu_sequence = np.tile(mu, (horizon, 1))
-    sigma_sequence = np.tile(covariance, (horizon, 1, 1))
-    weights, _, _ = admm_multi_period_optimizer(
-        mu_sequence,
-        sigma_sequence,
-        current_weights,
-        gamma=gamma,
-        lambda_=lambda_,
-        max_iter=2000,
-        tolerance=1e-6,
-    )
-    return weights[0]
-
-
 def run_backtest(
     returns: pd.DataFrame,
     strategy: str,
     lookback: int = LOOKBACK,
     horizon: int = HORIZON,
     gamma: float = GAMMA,
-    lambda_: float = LAMBDA,
+    lambda_: float | None = None,
     cost_bps: float = COST_BPS,
     periods: int | None = None,
+    target_volatility: float | None = None,
 ) -> pd.DataFrame:
-    """Run one strategy and return per-period gross return, net return, turnover, and cost."""
+    """Run one strategy and return per-period gross return, net return, turnover, and cost.
+
+    `lambda_` defaults to the charged cost. `target_volatility` replaces `gamma` with a value
+    calibrated on the first estimation window, which lies strictly before the tested periods.
+    """
     if strategy not in STRATEGIES:
         raise ValueError(f"strategy must be one of {STRATEGIES}")
     if lookback < 2 or lookback >= len(returns):
@@ -80,8 +62,23 @@ def run_backtest(
             raise ValueError("periods must be at least 1")
         first = max(lookback, len(returns) - periods)
 
+    penalty = lambda_from_cost(cost_bps) if lambda_ is None else lambda_
+    if penalty < 0.0:
+        raise ValueError("lambda_ cannot be negative")
     cost_rate = cost_bps / 10_000.0
-    held = np.full(n_assets, 1.0 / n_assets)
+    equal_weights = np.full(n_assets, 1.0 / n_assets)
+
+    if target_volatility is not None:
+        first_mu, first_covariance = estimate_window(returns.iloc[first - lookback : first])
+        gamma = calibrate_gamma(
+            first_mu,
+            first_covariance,
+            target_volatility,
+            equal_weights,
+            periods_per_year=PERIODS_PER_YEAR,
+        )
+
+    held = equal_weights
     records = []
 
     for index in range(first, len(returns)):
@@ -91,13 +88,13 @@ def run_backtest(
         if strategy == "buy_and_hold":
             target = held
         elif strategy == "equal_weight":
-            target = np.full(n_assets, 1.0 / n_assets)
+            target = equal_weights
         else:
             mu, covariance = estimate_window(history)
             if strategy == "single_period":
-                target = _solve_target(mu, covariance, held, 1, gamma, 0.0)
+                target = solve_target_weights(mu, covariance, held, 1, gamma, 0.0)
             else:
-                target = _solve_target(mu, covariance, held, horizon, gamma, lambda_)
+                target = solve_target_weights(mu, covariance, held, horizon, gamma, penalty)
 
         trades = target - held
         turnover = float(np.abs(trades).sum())
@@ -161,6 +158,13 @@ if __name__ == "__main__":
     pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", None)
     pd.set_option("display.float_format", lambda value: f"{value:.4f}")
-    table = compare(generate_synthetic_market_data(), periods=150)
-    print(f"cost assumption: {COST_BPS:.0f} bps per unit turnover\n")
-    print(table.T)
+    returns = generate_synthetic_market_data()
+
+    print(f"cost {COST_BPS:.0f} bps, penalty = charged cost = {lambda_from_cost(COST_BPS):.5f}\n")
+    print(compare(returns, periods=150).T)
+
+    target = 0.04
+    mu, covariance = estimate_window(returns.iloc[290:350])
+    calibrated = calibrate_gamma(mu, covariance, target, periods_per_year=PERIODS_PER_YEAR)
+    print(f"\ngamma calibrated to a {target:.0%} volatility target: {calibrated:.1f}")
+    print(compare(returns, periods=150, target_volatility=target).T)

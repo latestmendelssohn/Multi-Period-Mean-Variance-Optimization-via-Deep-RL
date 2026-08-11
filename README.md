@@ -60,11 +60,12 @@ Tests use the standard library, so no extra dependency is needed:
 python -m unittest -v
 ```
 
-32 tests. The solver side covers simplex projection, the soft-thresholding operator, estimator
-shapes and positive-definiteness, ADMM convergence, the trade/weight consistency identity,
-penalty monotonicity, and input validation. The backtest side covers cost accounting, turnover,
-weight drift, the metrics, and a guard that fails if a decision ever depends on data from after
-the moment it was made.
+62 tests. The solver side covers simplex projection, the soft-thresholding operator, estimator
+shapes and positive-definiteness, ADMM convergence, the trade/weight consistency identity, penalty
+monotonicity, gamma calibration, and input validation. The backtest side covers cost accounting,
+turnover, weight drift, the metrics, the cost-derived penalty, and a guard that fails if a decision
+ever depends on data from after the moment it was made. The adapter side covers price and return
+files plus every validation failure.
 
 ## Setup
 
@@ -118,7 +119,8 @@ not derived from a volatility target. `LAMBDA = 0.01` is not tied to real tradin
 
 Every strategy estimates parameters from returns strictly before the period it trades into, and
 all start from the same untraded equal-weight position. Parameters are held constant across the
-horizon because future estimates do not exist at decision time.
+horizon because future estimates do not exist at decision time. The L1 penalty inside the objective
+defaults to the cost actually charged, so the optimizer is not avoiding a cost it never pays.
 
 ```text
 python backtest.py
@@ -126,41 +128,79 @@ python backtest.py
 
 ### Measured results
 
-150 periods of the synthetic fixture, 10 bps per unit turnover:
+150 periods of the synthetic fixture, 10 bps per unit turnover, penalty equal to that cost:
 
 ```text
                        buy_and_hold  equal_weight  single_period  multi_period
-total_net_return            -0.0350       -0.0320        -0.0550       -0.0272
-annualized_return           -0.0581       -0.0531        -0.0906       -0.0453
-annualized_volatility        0.0426        0.0423         0.0259        0.0241
-sharpe_net                  -1.3840       -1.2680        -3.6483       -1.9096
-max_drawdown                -0.0458       -0.0440        -0.0572       -0.0324
-mean_turnover                0.0000        0.0086         0.1360        0.0083
-total_cost                   0.0000        0.0013         0.0204        0.0012
-zero_trade_fraction          1.0000        0.0080         0.0777        0.8863
+total_net_return            -0.0350       -0.0320        -0.0550       -0.0420
+annualized_return           -0.0581       -0.0531        -0.0906       -0.0696
+annualized_volatility        0.0426        0.0423         0.0259        0.0257
+sharpe_net                  -1.3840       -1.2680        -3.6483       -2.7908
+max_drawdown                -0.0458       -0.0440        -0.0572       -0.0450
+mean_turnover                0.0000        0.0086         0.1360        0.0738
+total_cost                   0.0000        0.0013         0.0204        0.0111
+zero_trade_fraction          1.0000        0.0080         0.0777        0.3707
 ```
 
-The multi-period solver trades about 16 times less than single-period Markowitz (mean turnover
-0.0083 against 0.1360) and pays a seventeenth of the cost. Varying the cost assumption isolates
-the effect on total net return:
+Sweeping the cost, with the penalty tracking it:
 
 ```text
-cost      buy_and_hold  equal_weight  single_period  multi_period
-0 bps          -0.0350       -0.0307        -0.0355       -0.0260
-10 bps         -0.0350       -0.0320        -0.0550       -0.0272
-50 bps         -0.0350       -0.0370        -0.1291       -0.0321
+cost     penalty   single_period          multi_period
+                   return   turnover      return   turnover   zero trades
+0 bps    0.0000   -0.0355     0.1360     -0.0355     0.1359        0.0780
+10 bps   0.0010   -0.0550     0.1360     -0.0420     0.0738        0.3707
+50 bps   0.0050   -0.1291     0.1360     -0.0392     0.0210        0.7613
 ```
 
-Single-period Markowitz loses 0.0936 of return between 0 and 50 bps. The penalized multi-period
-solver loses 0.0061 over the same range, so its result is close to insensitive to the cost
-assumption.
+Three things follow from this table. At zero cost the penalty vanishes and the multi-period solver
+reproduces single-period Markowitz to four decimal places, which is the reduction the model
+predicts. As the cost rises the solver trades less on its own, from 0.1359 turnover down to 0.0210,
+without any parameter being retuned. And single-period Markowitz gives up 0.0936 of return between
+0 and 50 bps while the penalized solver gives up 0.0037.
+
+An earlier version of this file reported `zero_trade_fraction` of 0.8863 and a net return of
+-0.0272 at 10 bps. Those came from `LAMBDA = 0.01`, a penalty appropriate to a 100 bps cost while
+only 10 bps was charged, so the optimizer was avoiding a cost it never paid. The numbers above use
+a penalty equal to the charged cost and are lower as a result.
 
 Three caveats. Every strategy loses money on this fixture, because the synthetic generator has
 zero-mean factor loadings and no risk premium, so these are relative comparisons and not evidence
 of profitability. The Sharpe ratios should not be ranked while returns are negative, since lower
-volatility pushes a negative Sharpe further down: `multi_period` has the best net return and the
-worst-but-one Sharpe for exactly that reason. And synthetic returns cannot support any claim about
-real markets.
+volatility pushes a negative Sharpe further down. And synthetic returns cannot support any claim
+about real markets.
+
+### Risk aversion from a volatility target
+
+`calibrate_gamma` bisects for the risk aversion whose single-period solution hits a target
+annualized volatility, so the parameter follows from a stated risk appetite instead of being chosen
+by hand. Calibrating to a 4 percent target on this fixture returns `gamma = 284.7`, and both
+optimizers do worse with it than with the hand-picked `GAMMA = 1000.0`:
+
+```text
+                       single_period  multi_period
+total_net_return             -0.0942       -0.0644
+annualized_volatility         0.0366        0.0358
+mean_turnover                 0.3095        0.1659
+```
+
+That is the honest comparison. The hand-picked value was chosen after seeing this fixture, and it
+flatters the results; the calibrated value is reproducible on data the parameter was not fitted to.
+
+## Real data
+
+`data.py` loads returns from a local CSV, either as period returns or as price levels:
+
+```python
+from data import load_returns_csv
+from backtest import compare
+
+returns = load_returns_csv("prices.csv", kind="prices")
+print(compare(returns, periods=150))
+```
+
+It validates numeric columns, missing values, duplicate and unsorted dates, and non-positive
+prices, so a malformed file fails at load instead of producing plausible-looking results. Fetching
+data over the network would add a dependency and is left out deliberately.
 
 ## Research sequence
 

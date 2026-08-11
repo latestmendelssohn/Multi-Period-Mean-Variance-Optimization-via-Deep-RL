@@ -6,10 +6,15 @@ import numpy as np
 
 from multi_period_admm import (
     admm_multi_period_optimizer,
+    annualized_volatility,
+    calibrate_gamma,
     estimate_parameters,
+    estimate_window,
     generate_synthetic_market_data,
+    lambda_from_cost,
     project_simplex,
     soft_threshold,
+    solve_target_weights,
 )
 
 
@@ -154,6 +159,81 @@ class TestAdmmOptimizer(unittest.TestCase):
         broken[0] = np.zeros_like(broken[0])
         with self.assertRaises(ValueError):
             admm_multi_period_optimizer(mu, broken, x0)
+
+
+class TestLambdaFromCost(unittest.TestCase):
+    def test_converts_basis_points_to_return_units(self):
+        self.assertAlmostEqual(lambda_from_cost(10.0), 0.001, places=12)
+        self.assertAlmostEqual(lambda_from_cost(0.0), 0.0, places=12)
+
+    def test_rejects_negative_cost(self):
+        with self.assertRaises(ValueError):
+            lambda_from_cost(-1.0)
+
+
+class TestSolveTargetWeights(unittest.TestCase):
+    def test_returns_one_valid_weight_vector(self):
+        mu, sigma, x0 = _tiny_problem()
+        weights = solve_target_weights(mu[0], sigma[0], x0, horizon=3, gamma=100.0)
+        self.assertEqual(weights.shape, x0.shape)
+        self.assertAlmostEqual(weights.sum(), 1.0, places=8)
+        self.assertTrue(np.all(weights >= -1e-10))
+
+    def test_rejects_bad_horizon(self):
+        mu, sigma, x0 = _tiny_problem()
+        with self.assertRaises(ValueError):
+            solve_target_weights(mu[0], sigma[0], x0, horizon=0)
+
+
+class TestCalibrateGamma(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        returns = generate_synthetic_market_data(n_assets=6, n_days=160)
+        cls.mu, cls.covariance = estimate_window(returns.iloc[-60:])
+        cls.equal = np.full(6, 1.0 / 6.0)
+
+    def _volatility_for(self, gamma):
+        weights = solve_target_weights(self.mu, self.covariance, self.equal, gamma=gamma)
+        return annualized_volatility(weights, self.covariance)
+
+    def test_hits_a_reachable_target(self):
+        reachable = (self._volatility_for(1e-2) + self._volatility_for(1e8)) / 2.0
+        gamma = calibrate_gamma(self.mu, self.covariance, reachable, self.equal)
+        self.assertAlmostEqual(self._volatility_for(gamma), reachable, delta=0.005)
+
+    def test_higher_target_means_lower_risk_aversion(self):
+        low_target = self._volatility_for(1e8) * 1.05
+        high_target = self._volatility_for(1e-2) * 0.95
+        self.assertLess(
+            calibrate_gamma(self.mu, self.covariance, high_target, self.equal),
+            calibrate_gamma(self.mu, self.covariance, low_target, self.equal),
+        )
+
+    def test_unreachable_targets_return_the_bounds(self):
+        bounds = (1e-2, 1e8)
+        self.assertEqual(
+            calibrate_gamma(self.mu, self.covariance, 100.0, self.equal, bounds=bounds), 1e-2
+        )
+        self.assertEqual(
+            calibrate_gamma(self.mu, self.covariance, 1e-9, self.equal, bounds=bounds), 1e8
+        )
+
+    def test_rejects_invalid_arguments(self):
+        with self.assertRaises(ValueError):
+            calibrate_gamma(self.mu, self.covariance, 0.0, self.equal)
+        with self.assertRaises(ValueError):
+            calibrate_gamma(self.mu, self.covariance, 0.05, self.equal, bounds=(10.0, 1.0))
+
+
+class TestAnnualizedVolatility(unittest.TestCase):
+    def test_known_value(self):
+        covariance = np.diag([0.0001, 0.0001])
+        weights = np.array([1.0, 0.0])
+        self.assertAlmostEqual(
+            annualized_volatility(weights, covariance, periods_per_year=252),
+            np.sqrt(0.0001 * 252),
+            places=12,
+        )
 
 
 if __name__ == "__main__":
