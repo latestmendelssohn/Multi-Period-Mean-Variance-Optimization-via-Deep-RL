@@ -19,17 +19,17 @@ import pandas as pd
 from multi_period_admm import (
     GAMMA,
     LOOKBACK,
-    calibrate_gamma,
     estimate_window,
     generate_synthetic_market_data,
     lambda_from_cost,
     solve_target_weights,
 )
+from rl_policy import predict_weights, train_policy
 
 COST_BPS = 10.0
 HORIZON = 5
 PERIODS_PER_YEAR = 252
-STRATEGIES = ("buy_and_hold", "equal_weight", "single_period", "multi_period")
+STRATEGIES = ("buy_and_hold", "equal_weight", "single_period", "multi_period", "rl_policy")
 
 
 def run_backtest(
@@ -41,12 +41,12 @@ def run_backtest(
     lambda_: float | None = None,
     cost_bps: float = COST_BPS,
     periods: int | None = None,
-    target_volatility: float | None = None,
 ) -> pd.DataFrame:
-    """Run one strategy and return per-period gross return, net return, turnover, and cost.
+    """Run one strategy and return per-period returns, turnover, and cost.
 
-    `lambda_` defaults to the charged cost. `target_volatility` replaces `gamma` with a value
-    calibrated on the first estimation window, which lies strictly before the tested periods.
+    `lambda_` defaults to the charged cost. Deterministic strategies estimate parameters from
+    the trailing window before each tested period. `rl_policy` trains once on all returns before
+    the first tested period, then acts deterministically without seeing test returns.
     """
     if strategy not in STRATEGIES:
         raise ValueError(f"strategy must be one of {STRATEGIES}")
@@ -68,14 +68,17 @@ def run_backtest(
     cost_rate = cost_bps / 10_000.0
     equal_weights = np.full(n_assets, 1.0 / n_assets)
 
-    if target_volatility is not None:
-        first_mu, first_covariance = estimate_window(returns.iloc[first - lookback : first])
-        gamma = calibrate_gamma(
-            first_mu,
-            first_covariance,
-            target_volatility,
+    trained_policy = None
+    if strategy == "rl_policy":
+        training = returns.iloc[:first]
+        rl_lookback = min(20, max(2, len(training) // 3))
+        if len(training) <= rl_lookback:
+            raise ValueError("rl_policy needs more pre-test history")
+        trained_policy = train_policy(
+            training,
             equal_weights,
-            periods_per_year=PERIODS_PER_YEAR,
+            lookback=rl_lookback,
+            cost_bps=cost_bps,
         )
 
     held = equal_weights
@@ -93,8 +96,10 @@ def run_backtest(
             mu, covariance = estimate_window(history)
             if strategy == "single_period":
                 target = solve_target_weights(mu, covariance, held, 1, gamma, 0.0)
-            else:
+            elif strategy == "multi_period":
                 target = solve_target_weights(mu, covariance, held, horizon, gamma, penalty)
+            else:
+                target = predict_weights(trained_policy, history, held)
 
         trades = target - held
         turnover = float(np.abs(trades).sum())
@@ -162,9 +167,3 @@ if __name__ == "__main__":
 
     print(f"cost {COST_BPS:.0f} bps, penalty = charged cost = {lambda_from_cost(COST_BPS):.5f}\n")
     print(compare(returns, periods=150).T)
-
-    target = 0.04
-    mu, covariance = estimate_window(returns.iloc[290:350])
-    calibrated = calibrate_gamma(mu, covariance, target, periods_per_year=PERIODS_PER_YEAR)
-    print(f"\ngamma calibrated to a {target:.0%} volatility target: {calibrated:.1f}")
-    print(compare(returns, periods=150, target_volatility=target).T)

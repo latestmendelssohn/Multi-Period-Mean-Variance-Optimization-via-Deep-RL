@@ -104,6 +104,15 @@ def admm_multi_period_optimizer(
 ) -> tuple[np.ndarray, np.ndarray, list[tuple[float, float]]]:
     """Solve the multi-period problem and return weights, trades, and the residual trace.
 
+    Three splits. The weight block is an exact linear solve. Feasibility is enforced by a
+    consensus copy whose update is the simplex projection, and turnover by an auxiliary trade
+    variable whose update is soft-thresholding.
+
+    Projecting the unconstrained minimizer onto the simplex directly would be cheaper but wrong:
+    the projection of the unconstrained optimum is not the constrained optimum, and the error
+    grows with `gamma` until the solution collapses to equal weights. The consensus copy is what
+    makes high risk aversion converge to minimum variance instead.
+
     Convergence is not guaranteed within `max_iter`; check the last residual pair.
     """
     mu_sequence = np.asarray(mu_sequence, dtype=float)
@@ -129,36 +138,51 @@ def admm_multi_period_optimizer(
             raise ValueError("covariance matrices must be positive definite")
 
     weights = np.tile(initial_weights, (periods, 1))
+    feasible = weights.copy()
     trades = np.zeros((periods, n_assets))
-    dual = np.zeros((periods, n_assets))
+    trade_dual = np.zeros((periods, n_assets))
+    feasibility_dual = np.zeros((periods, n_assets))
+
     system_inverses = []
     for period, covariance in enumerate(sigma_sequence):
-        future_penalty = 2.0 * rho if period < periods - 1 else rho
-        system_inverses.append(np.linalg.inv(gamma * covariance + future_penalty * identity))
+        coupling = 2.0 if period < periods - 1 else 1.0
+        system_inverses.append(
+            np.linalg.inv(gamma * covariance + (coupling + 1.0) * rho * identity)
+        )
 
     residual_trace: list[tuple[float, float]] = []
     for _ in range(max_iter):
         old_trades = trades.copy()
+        old_feasible = feasible.copy()
+
         for period in range(periods):
             previous = initial_weights if period == 0 else weights[period - 1]
-            right_hand_side = mu_sequence[period] + rho * (
-                previous + trades[period] - dual[period] / rho
+            right_hand_side = (
+                mu_sequence[period]
+                + rho * (previous + trades[period] - trade_dual[period] / rho)
+                + rho * (feasible[period] - feasibility_dual[period] / rho)
             )
             if period < periods - 1:
                 right_hand_side += rho * (
-                    weights[period + 1] - trades[period + 1] + dual[period + 1] / rho
+                    weights[period + 1] - trades[period + 1] + trade_dual[period + 1] / rho
                 )
-            weights[period] = project_simplex(system_inverses[period] @ right_hand_side)
+            weights[period] = system_inverses[period] @ right_hand_side
+
+        for period in range(periods):
+            feasible[period] = project_simplex(
+                weights[period] + feasibility_dual[period] / rho
+            )
 
         for period in range(periods):
             previous = initial_weights if period == 0 else weights[period - 1]
             trades[period] = soft_threshold(
-                weights[period] - previous + dual[period] / rho, lambda_ / rho
+                weights[period] - previous + trade_dual[period] / rho, lambda_ / rho
             )
 
         for period in range(periods):
             previous = initial_weights if period == 0 else weights[period - 1]
-            dual[period] += rho * (weights[period] - previous - trades[period])
+            trade_dual[period] += rho * (weights[period] - previous - trades[period])
+            feasibility_dual[period] += rho * (weights[period] - feasible[period])
 
         primal = np.sqrt(
             sum(
@@ -170,13 +194,17 @@ def admm_multi_period_optimizer(
                 ** 2
                 for period in range(periods)
             )
+            + np.linalg.norm(weights - feasible) ** 2
         )
-        dual_residual = rho * np.linalg.norm(trades - old_trades)
+        dual_residual = rho * np.sqrt(
+            np.linalg.norm(trades - old_trades) ** 2
+            + np.linalg.norm(feasible - old_feasible) ** 2
+        )
         residual_trace.append((float(primal), float(dual_residual)))
         if primal < tolerance and dual_residual < tolerance:
             break
 
-    return weights, trades, residual_trace
+    return feasible, trades, residual_trace
 
 
 def lambda_from_cost(cost_bps: float) -> float:
@@ -225,51 +253,6 @@ def annualized_volatility(
     """Annualized volatility of a fixed weight vector under one covariance matrix."""
     variance = float(weights @ covariance @ weights)
     return float(np.sqrt(max(variance, 0.0) * periods_per_year))
-
-
-def calibrate_gamma(
-    mu: np.ndarray,
-    covariance: np.ndarray,
-    target_volatility: float,
-    current_weights: np.ndarray | None = None,
-    periods_per_year: int = 252,
-    bounds: tuple[float, float] = (1e-2, 1e8),
-    max_iter: int = 40,
-) -> float:
-    """Smallest risk aversion whose single-period solution hits `target_volatility`.
-
-    Portfolio volatility falls as risk aversion rises, so this bisects in log space. A target
-    outside the reachable range returns the corresponding bound, since no risk aversion produces
-    a portfolio more or less volatile than the extremes of the feasible set.
-    """
-    if target_volatility <= 0.0:
-        raise ValueError("target_volatility must be positive")
-    low, high = bounds
-    if not 0.0 < low < high:
-        raise ValueError("bounds must satisfy 0 < low < high")
-
-    n_assets = covariance.shape[0]
-    if current_weights is None:
-        current_weights = np.full(n_assets, 1.0 / n_assets)
-
-    def volatility_at(gamma: float) -> float:
-        weights = solve_target_weights(mu, covariance, current_weights, gamma=gamma)
-        return annualized_volatility(weights, covariance, periods_per_year)
-
-    if volatility_at(low) <= target_volatility:
-        return low
-    if volatility_at(high) >= target_volatility:
-        return high
-
-    for _ in range(max_iter):
-        middle = float(np.sqrt(low * high))
-        if volatility_at(middle) > target_volatility:
-            low = middle
-        else:
-            high = middle
-        if high / low < 1.01:
-            break
-    return float(np.sqrt(low * high))
 
 
 def run_baseline() -> pd.Series:

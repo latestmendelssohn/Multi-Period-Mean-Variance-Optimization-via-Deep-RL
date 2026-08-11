@@ -160,7 +160,7 @@ class TestSummarize(unittest.TestCase):
 class TestCompare(unittest.TestCase):
     def test_all_strategies_reported_on_same_windows(self):
         table = compare(RETURNS, lookback=LOOKBACK, periods=8, horizon=3)
-        self.assertEqual(len(table), 4)
+        self.assertEqual(len(table), 5)
         self.assertTrue((table["periods"] == 8).all())
         self.assertTrue(np.isfinite(table["total_net_return"].to_numpy()).all())
 
@@ -183,40 +183,6 @@ class TestCostConsistentPenalty(unittest.TestCase):
     def test_rejects_negative_penalty(self):
         with self.assertRaises(ValueError):
             _run("multi_period", lambda_=-0.01)
-
-
-class TestVolatilityTarget(unittest.TestCase):
-    def test_target_changes_the_solution(self):
-        fixed = _run("multi_period")
-        targeted = _run("multi_period", target_volatility=0.05)
-        self.assertFalse(
-            np.allclose(fixed["turnover"].to_numpy(), targeted["turnover"].to_numpy())
-        )
-
-    def test_target_does_not_use_future_data(self):
-        baseline = _run("multi_period", target_volatility=0.05)
-        tampered_returns = RETURNS.copy()
-        tampered_returns.iloc[-3:] = 0.5
-        tampered = run_backtest(
-            tampered_returns,
-            "multi_period",
-            lookback=LOOKBACK,
-            periods=PERIODS,
-            horizon=3,
-            target_volatility=0.05,
-        )
-        np.testing.assert_allclose(
-            baseline["turnover"].to_numpy()[:-3],
-            tampered["turnover"].to_numpy()[:-3],
-            atol=1e-12,
-        )
-
-    def test_benchmarks_ignore_the_target(self):
-        fixed = _run("equal_weight")
-        targeted = _run("equal_weight", target_volatility=0.05)
-        np.testing.assert_allclose(
-            fixed["net_return"].to_numpy(), targeted["net_return"].to_numpy(), atol=1e-12
-        )
 
 
 if __name__ == "__main__":

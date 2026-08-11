@@ -1,10 +1,4 @@
-# Local reference archives and extracted reference directories
-ponytail-main.zip
-humanizer-main.zip
-ponytail-main/
-humanizer-main/
-
-# Local working memory and agent config (not project documentation)
+# Local working memory and agent config
 PROGRESS.md
 .kiro/
 
@@ -15,9 +9,6 @@ __pycache__/
 .venv/
 venv/
 env/
-
-# Jupyter artifacts
-.ipynb_checkpoints/
 
 # Local secrets and machine-specific settings
 .env
