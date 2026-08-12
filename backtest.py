@@ -13,9 +13,12 @@ Run `python backtest.py` for the comparison table on synthetic data.
 
 from __future__ import annotations
 
+import argparse
+
 import numpy as np
 import pandas as pd
 
+from data import load_returns_csv
 from multi_period_admm import (
     GAMMA,
     LOOKBACK,
@@ -160,10 +163,21 @@ def compare(returns: pd.DataFrame, **kwargs) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the portfolio walk-forward comparison")
+    parser.add_argument("--csv", help="local returns or prices CSV")
+    parser.add_argument("--kind", choices=("returns", "prices"), default="returns")
+    parser.add_argument("--date-column", help="date column name; defaults to the first column")
+    parser.add_argument("--periods", type=int, default=150)
+    parser.add_argument("--cost-bps", type=float, default=COST_BPS)
+    args = parser.parse_args()
+
+    returns = (
+        load_returns_csv(args.csv, kind=args.kind, date_column=args.date_column)
+        if args.csv
+        else generate_synthetic_market_data()
+    )
     pd.set_option("display.width", 200)
     pd.set_option("display.max_columns", None)
     pd.set_option("display.float_format", lambda value: f"{value:.4f}")
-    returns = generate_synthetic_market_data()
-
-    print(f"cost {COST_BPS:.0f} bps, penalty = charged cost = {lambda_from_cost(COST_BPS):.5f}\n")
-    print(compare(returns, periods=150).T)
+    print(f"cost {args.cost_bps:.0f} bps, penalty = charged cost = {lambda_from_cost(args.cost_bps):.5f}\n")
+    print(compare(returns, periods=args.periods, cost_bps=args.cost_bps).T)

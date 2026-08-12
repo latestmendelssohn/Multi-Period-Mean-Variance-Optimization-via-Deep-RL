@@ -34,6 +34,15 @@ Run the synthetic walk-forward comparison:
 python backtest.py
 ```
 
+Run the same comparison on a local market-data CSV. The file must contain a date column followed by one numeric column per asset. Use decimal returns such as `0.01` for one percent, or pass `--kind prices` for positive price levels:
+
+```text
+python backtest.py --csv returns.csv --kind returns --periods 150 --cost-bps 10
+python backtest.py --csv prices.csv --kind prices --periods 150 --cost-bps 10
+```
+
+The command does not download data. It keeps the data boundary explicit and lets the same walk-forward code run on a CSV you obtained separately.
+
 Run all tests:
 
 ```text
@@ -101,7 +110,7 @@ returns = load_returns_csv("returns.csv", kind="returns")
 print(compare(returns, periods=150))
 ```
 
-Use `kind="prices"` to convert positive price levels to simple returns. The adapter checks dates, numeric values, missing values, and price validity.
+Use `kind="prices"` to convert positive price levels to simple returns. The adapter checks dates, numeric values, missing values, and price validity. The repository does not include a downloaded market dataset, so put a CSV obtained separately beside the project or pass its path to the command above. The same walk-forward code then replaces the synthetic input without changing the optimizer.
 
 
 ## Limitations
