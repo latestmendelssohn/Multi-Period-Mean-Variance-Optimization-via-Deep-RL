@@ -51,12 +51,13 @@ def run_backtest(
     lambda_: float | None = None,
     cost_bps: float = COST_BPS,
     periods: int | None = None,
+    rebalance_every: int = 1,
 ) -> pd.DataFrame:
     """Run one strategy and return per-period returns, turnover, and cost.
 
     `lambda_` defaults to the charged cost. Deterministic strategies estimate parameters from
-    the trailing window before each tested period. `rl_policy` trains once on all returns before
-    the first tested period, then acts deterministically without seeing test returns.
+    the trailing window before each tested period. `rebalance_every` controls how many tested
+    periods pass between new targets. `rl_policy` trains once on all returns before the first tested period, then acts deterministically without seeing test returns.
     """
     if strategy not in STRATEGIES:
         raise ValueError(f"strategy must be one of {STRATEGIES}")
@@ -71,6 +72,8 @@ def run_backtest(
         if periods < 1:
             raise ValueError("periods must be at least 1")
         first = max(lookback, len(returns) - periods)
+    if rebalance_every < 1:
+        raise ValueError("rebalance_every must be at least 1")
 
     penalty = lambda_from_cost(cost_bps) if lambda_ is None else lambda_
     if penalty < 0.0:
@@ -98,7 +101,9 @@ def run_backtest(
         history = returns.iloc[index - lookback : index]
         realized = returns.iloc[index].to_numpy()
 
-        if strategy == "buy_and_hold":
+        if (index - first) % rebalance_every:
+            target = held
+        elif strategy == "buy_and_hold":
             target = held
         elif strategy == "equal_weight":
             target = equal_weights
@@ -173,6 +178,18 @@ def compare(returns: pd.DataFrame, **kwargs) -> pd.DataFrame:
     ).T
 
 
+def compare_costs(
+    returns: pd.DataFrame, cost_levels: tuple[float, ...] = (5.0, 10.0, 20.0), **kwargs
+) -> pd.DataFrame:
+    """Run the same comparison at several linear transaction-cost levels."""
+    if not cost_levels:
+        raise ValueError("cost_levels cannot be empty")
+    return pd.concat(
+        {cost: compare(returns, cost_bps=cost, **kwargs) for cost in cost_levels},
+        names=("cost_bps", "strategy"),
+    )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the portfolio walk-forward comparison")
     parser.add_argument("--csv", help="local returns or prices CSV")
@@ -180,6 +197,7 @@ if __name__ == "__main__":
     parser.add_argument("--date-column", help="date column name; defaults to the first column")
     parser.add_argument("--periods", type=int, default=150)
     parser.add_argument("--cost-bps", type=float, default=COST_BPS)
+    parser.add_argument("--rebalance-every", type=int, default=1)
     args = parser.parse_args()
 
     returns = (
@@ -191,4 +209,9 @@ if __name__ == "__main__":
     pd.set_option("display.max_columns", None)
     pd.set_option("display.float_format", lambda value: f"{value:.4f}")
     print(f"cost {args.cost_bps:.0f} bps, penalty = charged cost = {lambda_from_cost(args.cost_bps):.5f}\n")
-    print(compare(returns, periods=args.periods, cost_bps=args.cost_bps).T)
+    print(compare(
+        returns,
+        periods=args.periods,
+        cost_bps=args.cost_bps,
+        rebalance_every=args.rebalance_every,
+    ).T)

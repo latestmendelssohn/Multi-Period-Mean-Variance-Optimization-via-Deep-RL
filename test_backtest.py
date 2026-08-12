@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from backtest import COST_BPS, compare, run_backtest, summarize
+from backtest import COST_BPS, compare, compare_costs, run_backtest, summarize
 from multi_period_admm import GAMMA, estimate_window, generate_synthetic_market_data, lambda_from_cost, solve_target_weights
 
 RETURNS = generate_synthetic_market_data(n_assets=6, n_days=140)
@@ -100,6 +100,24 @@ class TestCostsAndTurnover(unittest.TestCase):
         self.assertLessEqual(high, low)
 
 
+class TestCostSensitivity(unittest.TestCase):
+    def test_runs_each_requested_cost_level(self):
+        table = compare_costs(
+            RETURNS,
+            cost_levels=(5.0, 10.0, 20.0),
+            lookback=LOOKBACK,
+            periods=8,
+            horizon=3,
+        )
+        self.assertEqual(table.index.names, ["cost_bps", "strategy"])
+        self.assertEqual(set(table.index.get_level_values("cost_bps")), {5.0, 10.0, 20.0})
+        self.assertEqual(len(table), 18)
+
+    def test_rejects_empty_cost_levels(self):
+        with self.assertRaises(ValueError):
+            compare_costs(RETURNS, cost_levels=())
+
+
 class TestMinimumVariance(unittest.TestCase):
     def test_zero_return_target_has_no_more_variance_than_equal_weight(self):
         _, covariance = estimate_window(RETURNS.iloc[:LOOKBACK])
@@ -128,6 +146,12 @@ class TestPortfolioMechanics(unittest.TestCase):
         self.assertTrue((turnover[1:] > 0.0).all())
         self.assertLess(turnover.max(), 0.5)
 
+    def test_rebalance_every_two_holds_intervening_periods(self):
+        result = _run("equal_weight", rebalance_every=2)
+        turnover = result["turnover"].to_numpy()
+        self.assertAlmostEqual(turnover[1], 0.0, places=12)
+        self.assertGreater(turnover[2], 0.0)
+
     def test_all_periods_are_covered(self):
         result = _run("equal_weight")
         self.assertEqual(len(result), PERIODS)
@@ -144,6 +168,8 @@ class TestPortfolioMechanics(unittest.TestCase):
             _run("equal_weight", cost_bps=-1.0)
         with self.assertRaises(ValueError):
             _run("equal_weight", periods=0)
+        with self.assertRaises(ValueError):
+            _run("equal_weight", rebalance_every=0)
 
 
 class TestSummarize(unittest.TestCase):

@@ -7,7 +7,8 @@ A small portfolio-optimization project. It compares deterministic Markowitz and 
 - EWMA expected returns and Ledoit-Wolf covariance estimation.
 - Long-only, fully invested portfolios: weights are non-negative and sum to one.
 - Correct consensus ADMM updates for simplex feasibility and sparse trades.
-- Linear transaction costs expressed in basis points.
+- Linear transaction costs expressed in basis points, with cost-level comparisons.
+- Configurable rebalancing frequency for the walk-forward backtest.
 - A walk-forward backtest against buy-and-hold, equal weight, minimum variance, single-period Markowitz, multi-period ADMM, and `rl_policy`.
 - A local CSV adapter for return or price files.
 - A small NumPy-only REINFORCE-style policy. No PyTorch or deployment layer.
@@ -37,7 +38,7 @@ python backtest.py
 Run the same comparison on a local market-data CSV. The file must contain a date column followed by one numeric column per asset. Use decimal returns such as `0.01` for one percent, or pass `--kind prices` for positive price levels:
 
 ```text
-python backtest.py --csv returns.csv --kind returns --periods 150 --cost-bps 10
+python backtest.py --csv returns.csv --kind returns --periods 150 --cost-bps 10 --rebalance-every 5
 python backtest.py --csv prices.csv --kind prices --periods 150 --cost-bps 10
 ```
 
@@ -57,6 +58,14 @@ The backtest estimates parameters only from returns before each decision. Its de
 
 ```python
 lambda_from_cost(cost_bps) == cost_bps / 10_000
+```
+
+Use `compare_costs` to repeat the same test at several cost levels:
+
+```python
+from backtest import compare_costs
+
+print(compare_costs(returns, cost_levels=(5, 10, 20), periods=150))
 ```
 
 ## RL benchmark
