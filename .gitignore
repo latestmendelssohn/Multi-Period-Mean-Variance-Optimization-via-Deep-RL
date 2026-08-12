@@ -2,6 +2,12 @@
 PROGRESS.md
 .kiro/
 
+# Local plan and reference material (kept out of the repo)
+AUDIT_AND_PLAN.md
+*action_plan*.md
+*_plan.md
+plan.md
+
 # Python artifacts
 __pycache__/
 *.py[cod]
