@@ -129,10 +129,10 @@ The included results use deterministic synthetic returns and are only an impleme
 
 ## Project files
 
-- `multi_period_admm.py`: estimators, simplex and soft-thresholding utilities, consensus ADMM solver, and deterministic smoke run.
-- `backtest.py`: walk-forward evaluation, transaction-cost accounting, metrics, and strategy comparison.
+- `multi_period_admm.py`: EWMA or lag-1 return estimates, simplex and soft-thresholding utilities, consensus ADMM solver, and deterministic smoke run.
+- `backtest.py`: walk-forward evaluation, six strategy comparisons, transaction-cost accounting, rebalancing control, cost sensitivity, and the local-data CLI.
 - `rl_policy.py`: NumPy REINFORCE-style policy used by the optional RL benchmark.
 - `data.py`: validation and loading for local return or price CSV files.
-- `test_*.py`: 63 offline tests covering the solver, backtest, CSV adapter, and RL path.
+- `test_*.py`: 72 offline tests covering the solver, backtest, CSV adapter, forecasting option, and RL path.
 
 The final verification uses Python 3.11.9 with the pinned dependencies in `requirements.txt`. The full test suite, optimizer smoke run, and backtest script all pass.
