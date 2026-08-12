@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from backtest import COST_BPS, compare, run_backtest, summarize
-from multi_period_admm import generate_synthetic_market_data, lambda_from_cost
+from multi_period_admm import GAMMA, estimate_window, generate_synthetic_market_data, lambda_from_cost, solve_target_weights
 
 RETURNS = generate_synthetic_market_data(n_assets=6, n_days=140)
 LOOKBACK = 40
@@ -23,7 +23,7 @@ class TestNoLookAhead(unittest.TestCase):
     """The decisive property: a decision may not depend on data after it was made."""
 
     def test_future_returns_cannot_change_past_decisions(self):
-        for strategy in ("equal_weight", "single_period", "multi_period"):
+        for strategy in ("equal_weight", "minimum_variance", "single_period", "multi_period"):
             with self.subTest(strategy=strategy):
                 baseline = _run(strategy)
                 tampered_returns = RETURNS.copy()
@@ -93,10 +93,29 @@ class TestCostsAndTurnover(unittest.TestCase):
             result["net_return"].to_numpy(), result["gross_return"].to_numpy(), atol=1e-15
         )
 
+
     def test_turnover_penalty_reduces_trading(self):
         low = summarize(_run("multi_period", lambda_=0.0))["mean_turnover"]
         high = summarize(_run("multi_period", lambda_=0.05))["mean_turnover"]
         self.assertLessEqual(high, low)
+
+
+class TestMinimumVariance(unittest.TestCase):
+    def test_zero_return_target_has_no_more_variance_than_equal_weight(self):
+        _, covariance = estimate_window(RETURNS.iloc[:LOOKBACK])
+        equal = np.full(RETURNS.shape[1], 1.0 / RETURNS.shape[1])
+        target = solve_target_weights(
+            np.zeros(RETURNS.shape[1]), covariance, equal, gamma=GAMMA
+        )
+        self.assertLessEqual(
+            target @ covariance @ target,
+            equal @ covariance @ equal + 1e-10,
+        )
+
+    def test_strategy_runs_in_the_walk_forward_backtest(self):
+        result = _run("minimum_variance")
+        self.assertEqual(len(result), PERIODS)
+        self.assertTrue(np.isfinite(result["net_return"].to_numpy()).all())
 
 
 class TestPortfolioMechanics(unittest.TestCase):
@@ -160,7 +179,7 @@ class TestSummarize(unittest.TestCase):
 class TestCompare(unittest.TestCase):
     def test_all_strategies_reported_on_same_windows(self):
         table = compare(RETURNS, lookback=LOOKBACK, periods=8, horizon=3)
-        self.assertEqual(len(table), 5)
+        self.assertEqual(len(table), 6)
         self.assertTrue((table["periods"] == 8).all())
         self.assertTrue(np.isfinite(table["total_net_return"].to_numpy()).all())
 

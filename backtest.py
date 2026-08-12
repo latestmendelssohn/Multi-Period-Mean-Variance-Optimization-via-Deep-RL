@@ -32,7 +32,14 @@ from rl_policy import predict_weights, train_policy
 COST_BPS = 10.0
 HORIZON = 5
 PERIODS_PER_YEAR = 252
-STRATEGIES = ("buy_and_hold", "equal_weight", "single_period", "multi_period", "rl_policy")
+STRATEGIES = (
+    "buy_and_hold",
+    "equal_weight",
+    "minimum_variance",
+    "single_period",
+    "multi_period",
+    "rl_policy",
+)
 
 
 def run_backtest(
@@ -99,6 +106,10 @@ def run_backtest(
             mu, covariance = estimate_window(history)
             if strategy == "single_period":
                 target = solve_target_weights(mu, covariance, held, 1, gamma, 0.0)
+            elif strategy == "minimum_variance":
+                target = solve_target_weights(
+                    np.zeros(n_assets), covariance, held, 1, gamma, 0.0
+                )
             elif strategy == "multi_period":
                 target = solve_target_weights(mu, covariance, held, horizon, gamma, penalty)
             else:

@@ -8,7 +8,7 @@ A small portfolio-optimization project. It compares deterministic Markowitz and 
 - Long-only, fully invested portfolios: weights are non-negative and sum to one.
 - Correct consensus ADMM updates for simplex feasibility and sparse trades.
 - Linear transaction costs expressed in basis points.
-- A walk-forward backtest against buy-and-hold, equal weight, single-period Markowitz, and `rl_policy`.
+- A walk-forward backtest against buy-and-hold, equal weight, minimum variance, single-period Markowitz, multi-period ADMM, and `rl_policy`.
 - A local CSV adapter for return or price files.
 - A small NumPy-only REINFORCE-style policy. No PyTorch or deployment layer.
 
@@ -85,15 +85,15 @@ These are synthetic-data checks, not market-performance claims.
 Using 150 periods and a 10-basis-point cost:
 
 ```text
-                       buy_and_hold  equal_weight  single_period  multi_period  rl_policy
-total_net_return            -0.0350       -0.0320        -0.0549        -0.0422    -0.1531
-annualized_return           -0.0581       -0.0531        -0.0906        -0.0699    -0.2435
-annualized_volatility        0.0426        0.0423         0.0259         0.0257     0.1821
-sharpe_net                  -1.3840       -1.2680        -3.6474        -2.8019    -1.4415
-max_drawdown                -0.0458       -0.0440        -0.0570        -0.0450    -0.2224
-mean_turnover                0.0000        0.0086         0.1356         0.0740     0.2721
-total_cost                   0.0000        0.0013         0.0203         0.0111     0.0408
-zero_trade_fraction          1.0000        0.0080         0.0830         0.3710     0.8940
+                       buy_and_hold  equal_weight  minimum_variance  single_period  multi_period  rl_policy
+total_net_return            -0.0350       -0.0320           -0.0296        -0.0549       -0.0422    -0.1531
+annualized_return           -0.0581       -0.0531           -0.0492        -0.0906       -0.0699    -0.2435
+annualized_volatility        0.0426        0.0423            0.0240         0.0259        0.0257     0.1821
+sharpe_net                  -1.3840       -1.2680           -2.0874        -3.6474       -2.8019    -1.4415
+max_drawdown                -0.0458       -0.0440           -0.0365        -0.0570       -0.0450    -0.2224
+mean_turnover                0.0000        0.0086            0.0517         0.1356        0.0740     0.2721
+total_cost                   0.0000        0.0013            0.0078         0.0203        0.0111     0.0408
+zero_trade_fraction          1.0000        0.0080            0.0473         0.0830        0.3710     0.8940
 ```
 
 On this run, the RL benchmark underperformed the deterministic strategies and had higher volatility and turnover. It is included as a reproducible baseline for comparison, not as evidence that reinforcement learning improves portfolio allocation.
