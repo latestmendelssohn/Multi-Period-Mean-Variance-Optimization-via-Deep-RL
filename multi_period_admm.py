@@ -43,19 +43,30 @@ def generate_synthetic_market_data(
     return pd.DataFrame(returns, index=dates, columns=columns)
 
 
-def estimate_window(window: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    """EWMA mean and Ledoit-Wolf covariance for one lookback window."""
-    span = max(2, len(window) // 2)
-    mu = window.ewm(span=span, adjust=False).mean().iloc[-1].to_numpy()
+def estimate_window(
+    window: pd.DataFrame, forecast_method: str = "ewma"
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate expected returns and covariance for one lookback window."""
+    if forecast_method == "ewma":
+        span = max(2, len(window) // 2)
+        mu = window.ewm(span=span, adjust=False).mean().iloc[-1].to_numpy()
+    elif forecast_method == "lag1":
+        values = window.to_numpy(dtype=float)
+        design = np.column_stack((np.ones(len(values) - 1), values[:-1]))
+        coefficients = np.linalg.lstsq(design, values[1:], rcond=None)[0]
+        mu = coefficients[0] + values[-1] @ coefficients[1:]
+    else:
+        raise ValueError("forecast_method must be 'ewma' or 'lag1'")
+
     covariance = LedoitWolf().fit(window.to_numpy()).covariance_
     covariance = (covariance + covariance.T) / 2.0
     return mu, covariance + 1e-10 * np.eye(covariance.shape[0])
 
 
 def estimate_parameters(
-    returns: pd.DataFrame, lookback: int = LOOKBACK
+    returns: pd.DataFrame, lookback: int = LOOKBACK, forecast_method: str = "ewma"
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Rolling EWMA means and Ledoit-Wolf covariances, one per period after the window."""
+    """Rolling expected returns and Ledoit-Wolf covariances after each window."""
     if lookback < 2 or lookback >= len(returns):
         raise ValueError("lookback must be at least 2 and smaller than the number of rows")
 
@@ -64,7 +75,9 @@ def estimate_parameters(
     sigma_sequence = np.empty((n_periods - lookback, n_assets, n_assets))
 
     for period in range(lookback, n_periods):
-        mu, covariance = estimate_window(returns.iloc[period - lookback : period])
+        mu, covariance = estimate_window(
+            returns.iloc[period - lookback : period], forecast_method=forecast_method
+        )
         mu_sequence[period - lookback] = mu
         sigma_sequence[period - lookback] = covariance
 

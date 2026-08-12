@@ -3,6 +3,7 @@
 import unittest
 
 import numpy as np
+import pandas as pd
 
 from multi_period_admm import (
     admm_multi_period_optimizer,
@@ -73,6 +74,15 @@ class TestEstimateParameters(unittest.TestCase):
         for covariance in self.sigma:
             np.testing.assert_allclose(covariance, covariance.T, atol=1e-12)
             self.assertGreater(np.linalg.eigvalsh(covariance).min(), 0.0)
+
+    def test_lag1_forecast_follows_a_linear_series(self):
+        window = pd.DataFrame({"A": [1.0, 2.0, 3.0, 4.0], "B": [4.0, 3.0, 2.0, 1.0]})
+        mu, _ = estimate_window(window, forecast_method="lag1")
+        np.testing.assert_allclose(mu, [5.0, 0.0], atol=1e-12)
+
+    def test_rejects_unknown_forecast_method(self):
+        with self.assertRaises(ValueError):
+            estimate_window(self.returns.iloc[:30], forecast_method="unknown")
 
     def test_deterministic(self):
         mu_again, _ = estimate_parameters(

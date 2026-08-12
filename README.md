@@ -4,7 +4,7 @@ A small portfolio-optimization project. It compares deterministic Markowitz and 
 
 ## What is included
 
-- EWMA expected returns and Ledoit-Wolf covariance estimation.
+- EWMA expected returns, an optional lag-1 linear forecast, and Ledoit-Wolf covariance estimation.
 - Long-only, fully invested portfolios: weights are non-negative and sum to one.
 - Correct consensus ADMM updates for simplex feasibility and sparse trades.
 - Linear transaction costs expressed in basis points, with cost-level comparisons.
@@ -40,6 +40,7 @@ Run the same comparison on a local market-data CSV. The file must contain a date
 ```text
 python backtest.py --csv returns.csv --kind returns --periods 150 --cost-bps 10 --rebalance-every 5
 python backtest.py --csv prices.csv --kind prices --periods 150 --cost-bps 10
+python backtest.py --csv returns.csv --kind returns --forecast-method lag1 --periods 150
 ```
 
 The command does not download data. It keeps the data boundary explicit and lets the same walk-forward code run on a CSV you obtained separately.
@@ -52,7 +53,7 @@ python -m unittest -v
 
 ## Deterministic model
 
-For each estimation window, EWMA estimates expected returns and Ledoit-Wolf estimates the covariance matrix. The optimizer solves a multi-period mean-variance objective with an L1 penalty on trades. Soft-thresholding creates exact zero trades, while a consensus split enforces the simplex constraint correctly.
+For each estimation window, EWMA estimates expected returns and Ledoit-Wolf estimates the covariance matrix. The optional `forecast_method="lag1"` setting fits one lagged linear model per asset using only that window. The optimizer solves a multi-period mean-variance objective with an L1 penalty on trades. Soft-thresholding creates exact zero trades, while a consensus split enforces the simplex constraint correctly.
 
 The backtest estimates parameters only from returns before each decision. Its default penalty is the charged transaction cost:
 

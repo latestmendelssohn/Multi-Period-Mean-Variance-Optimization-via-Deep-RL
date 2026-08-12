@@ -52,12 +52,15 @@ def run_backtest(
     cost_bps: float = COST_BPS,
     periods: int | None = None,
     rebalance_every: int = 1,
+    forecast_method: str = "ewma",
 ) -> pd.DataFrame:
     """Run one strategy and return per-period returns, turnover, and cost.
 
     `lambda_` defaults to the charged cost. Deterministic strategies estimate parameters from
     the trailing window before each tested period. `rebalance_every` controls how many tested
-    periods pass between new targets. `rl_policy` trains once on all returns before the first tested period, then acts deterministically without seeing test returns.
+    periods pass between new targets. `forecast_method` selects EWMA or the optional lag-1
+    forecast. `rl_policy` trains once on all returns before the first tested period, then acts
+    deterministically without seeing test returns.
     """
     if strategy not in STRATEGIES:
         raise ValueError(f"strategy must be one of {STRATEGIES}")
@@ -65,6 +68,8 @@ def run_backtest(
         raise ValueError("lookback must be at least 2 and smaller than the number of rows")
     if cost_bps < 0.0:
         raise ValueError("cost_bps cannot be negative")
+    if forecast_method not in ("ewma", "lag1"):
+        raise ValueError("forecast_method must be 'ewma' or 'lag1'")
 
     n_assets = returns.shape[1]
     first = lookback
@@ -108,7 +113,7 @@ def run_backtest(
         elif strategy == "equal_weight":
             target = equal_weights
         else:
-            mu, covariance = estimate_window(history)
+            mu, covariance = estimate_window(history, forecast_method=forecast_method)
             if strategy == "single_period":
                 target = solve_target_weights(mu, covariance, held, 1, gamma, 0.0)
             elif strategy == "minimum_variance":
@@ -198,6 +203,7 @@ if __name__ == "__main__":
     parser.add_argument("--periods", type=int, default=150)
     parser.add_argument("--cost-bps", type=float, default=COST_BPS)
     parser.add_argument("--rebalance-every", type=int, default=1)
+    parser.add_argument("--forecast-method", choices=("ewma", "lag1"), default="ewma")
     args = parser.parse_args()
 
     returns = (
@@ -214,4 +220,5 @@ if __name__ == "__main__":
         periods=args.periods,
         cost_bps=args.cost_bps,
         rebalance_every=args.rebalance_every,
+        forecast_method=args.forecast_method,
     ).T)

@@ -118,6 +118,17 @@ class TestCostSensitivity(unittest.TestCase):
             compare_costs(RETURNS, cost_levels=())
 
 
+class TestForecastMethod(unittest.TestCase):
+    def test_lag1_forecast_runs_in_the_backtest(self):
+        result = _run("single_period", forecast_method="lag1")
+        self.assertEqual(len(result), PERIODS)
+        self.assertTrue(np.isfinite(result["net_return"].to_numpy()).all())
+
+    def test_rejects_unknown_forecast_method(self):
+        with self.assertRaises(ValueError):
+            _run("single_period", forecast_method="unknown")
+
+
 class TestMinimumVariance(unittest.TestCase):
     def test_zero_return_target_has_no_more_variance_than_equal_weight(self):
         _, covariance = estimate_window(RETURNS.iloc[:LOOKBACK])
