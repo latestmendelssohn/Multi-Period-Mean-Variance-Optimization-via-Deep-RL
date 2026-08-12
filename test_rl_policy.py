@@ -51,6 +51,13 @@ class TestRlPolicy(unittest.TestCase):
         with self.assertRaises(ValueError):
             train_policy(self.returns.iloc[:2], self.initial, lookback=2)
 
+    def test_rejects_discount_outside_the_valid_range(self):
+        history = self.returns.iloc[:60]
+        with self.assertRaises(ValueError):
+            train_policy(history, self.initial, lookback=20, epochs=1, discount=0.0)
+        with self.assertRaises(ValueError):
+            train_policy(history, self.initial, lookback=20, epochs=1, discount=1.5)
+
 
 if __name__ == "__main__":
     unittest.main()

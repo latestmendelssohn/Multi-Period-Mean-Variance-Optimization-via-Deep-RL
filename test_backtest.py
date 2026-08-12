@@ -5,7 +5,16 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from backtest import COST_BPS, compare, compare_costs, run_backtest, summarize
+from backtest import (
+    COST_BPS,
+    RISK_REPORT_COLUMNS,
+    admm_vs_rl,
+    compare,
+    compare_costs,
+    risk_report,
+    run_backtest,
+    summarize,
+)
 from multi_period_admm import GAMMA, estimate_window, generate_synthetic_market_data, lambda_from_cost, solve_target_weights
 
 RETURNS = generate_synthetic_market_data(n_assets=6, n_days=140)
@@ -121,6 +130,11 @@ class TestCostSensitivity(unittest.TestCase):
 class TestForecastMethod(unittest.TestCase):
     def test_lag1_forecast_runs_in_the_backtest(self):
         result = _run("single_period", forecast_method="lag1")
+        self.assertEqual(len(result), PERIODS)
+        self.assertTrue(np.isfinite(result["net_return"].to_numpy()).all())
+
+    def test_ridge_forecast_runs_in_the_backtest(self):
+        result = _run("single_period", forecast_method="ridge")
         self.assertEqual(len(result), PERIODS)
         self.assertTrue(np.isfinite(result["net_return"].to_numpy()).all())
 
@@ -243,3 +257,27 @@ class TestCostConsistentPenalty(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReportingHelpers(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.comparison = compare(
+            RETURNS, lookback=LOOKBACK, periods=PERIODS, horizon=3
+        )
+
+    def test_risk_report_keeps_the_documented_columns_only(self):
+        report = risk_report(self.comparison)
+        self.assertEqual(tuple(report.columns), RISK_REPORT_COLUMNS)
+        self.assertEqual(len(report), len(self.comparison))
+
+    def test_admm_vs_rl_extracts_only_the_two_strategies(self):
+        head_to_head = admm_vs_rl(self.comparison)
+        self.assertEqual(list(head_to_head.index), ["multi_period", "rl_policy"])
+        self.assertEqual(tuple(head_to_head.columns), RISK_REPORT_COLUMNS)
+
+    def test_helpers_reject_missing_columns_or_strategies(self):
+        with self.assertRaises(ValueError):
+            risk_report(self.comparison.drop(columns=["sharpe_net"]))
+        with self.assertRaises(ValueError):
+            admm_vs_rl(self.comparison.drop(index=["rl_policy"]))

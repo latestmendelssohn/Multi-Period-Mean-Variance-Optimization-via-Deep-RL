@@ -68,8 +68,8 @@ def run_backtest(
         raise ValueError("lookback must be at least 2 and smaller than the number of rows")
     if cost_bps < 0.0:
         raise ValueError("cost_bps cannot be negative")
-    if forecast_method not in ("ewma", "lag1"):
-        raise ValueError("forecast_method must be 'ewma' or 'lag1'")
+    if forecast_method not in ("ewma", "lag1", "ridge"):
+        raise ValueError("forecast_method must be 'ewma', 'lag1', or 'ridge'")
 
     n_assets = returns.shape[1]
     first = lookback
@@ -183,6 +183,33 @@ def compare(returns: pd.DataFrame, **kwargs) -> pd.DataFrame:
     ).T
 
 
+RISK_REPORT_COLUMNS = (
+    "total_net_return",
+    "annualized_return",
+    "annualized_volatility",
+    "max_drawdown",
+    "sharpe_net",
+    "mean_turnover",
+    "total_cost",
+)
+
+
+def risk_report(comparison: pd.DataFrame) -> pd.DataFrame:
+    """Phase 7 view of `compare()`: return, risk, risk-adjusted, and trading columns only."""
+    missing = [column for column in RISK_REPORT_COLUMNS if column not in comparison.columns]
+    if missing:
+        raise ValueError(f"comparison is missing columns: {missing}")
+    return comparison.loc[:, list(RISK_REPORT_COLUMNS)]
+
+
+def admm_vs_rl(comparison: pd.DataFrame) -> pd.DataFrame:
+    """Phase 9 view of `compare()`: the multi-period ADMM row against the RL row."""
+    missing = [name for name in ("multi_period", "rl_policy") if name not in comparison.index]
+    if missing:
+        raise ValueError(f"comparison is missing strategies: {missing}")
+    return comparison.loc[["multi_period", "rl_policy"], list(RISK_REPORT_COLUMNS)]
+
+
 def compare_costs(
     returns: pd.DataFrame, cost_levels: tuple[float, ...] = (5.0, 10.0, 20.0), **kwargs
 ) -> pd.DataFrame:
@@ -203,7 +230,7 @@ if __name__ == "__main__":
     parser.add_argument("--periods", type=int, default=150)
     parser.add_argument("--cost-bps", type=float, default=COST_BPS)
     parser.add_argument("--rebalance-every", type=int, default=1)
-    parser.add_argument("--forecast-method", choices=("ewma", "lag1"), default="ewma")
+    parser.add_argument("--forecast-method", choices=("ewma", "lag1", "ridge"), default="ewma")
     args = parser.parse_args()
 
     returns = (

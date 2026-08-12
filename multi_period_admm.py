@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from sklearn.covariance import LedoitWolf
+from sklearn.linear_model import Ridge
 
 SEED = 42
 N_ASSETS = 20
@@ -26,6 +27,8 @@ GAMMA = 1000.0
 LAMBDA = 0.01
 RHO = 1.0
 TOLERANCE = 1e-4
+RIDGE_LAGS = 5
+RIDGE_ALPHA = 1.0
 
 
 def generate_synthetic_market_data(
@@ -55,8 +58,25 @@ def estimate_window(
         design = np.column_stack((np.ones(len(values) - 1), values[:-1]))
         coefficients = np.linalg.lstsq(design, values[1:], rcond=None)[0]
         mu = coefficients[0] + values[-1] @ coefficients[1:]
+    elif forecast_method == "ridge":
+        # Per-asset Ridge on the trailing window using RIDGE_LAGS previous returns as features.
+        # Regularization keeps the estimate stable when the lookback is short.
+        values = window.to_numpy(dtype=float)
+        n_rows = len(values)
+        if n_rows <= RIDGE_LAGS + 1:
+            raise ValueError("ridge forecast needs more rows than the number of lags")
+        target = values[RIDGE_LAGS:]
+        design = np.column_stack(
+            [values[RIDGE_LAGS - 1 - lag : n_rows - 1 - lag] for lag in range(RIDGE_LAGS)]
+        )
+        recent = values[n_rows - RIDGE_LAGS : n_rows][::-1].reshape(1, -1)
+        mu = np.empty(values.shape[1])
+        for asset in range(values.shape[1]):
+            model = Ridge(alpha=RIDGE_ALPHA)
+            model.fit(design, target[:, asset])
+            mu[asset] = float(model.predict(recent)[0])
     else:
-        raise ValueError("forecast_method must be 'ewma' or 'lag1'")
+        raise ValueError("forecast_method must be 'ewma', 'lag1', or 'ridge'")
 
     covariance = LedoitWolf().fit(window.to_numpy()).covariance_
     covariance = (covariance + covariance.T) / 2.0

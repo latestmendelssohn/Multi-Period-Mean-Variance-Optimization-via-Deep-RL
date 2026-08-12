@@ -80,6 +80,15 @@ class TestEstimateParameters(unittest.TestCase):
         mu, _ = estimate_window(window, forecast_method="lag1")
         np.testing.assert_allclose(mu, [5.0, 0.0], atol=1e-12)
 
+    def test_ridge_forecast_returns_a_finite_prediction_per_asset(self):
+        mu, _ = estimate_window(self.returns.iloc[:60], forecast_method="ridge")
+        self.assertEqual(mu.shape, (self.returns.shape[1],))
+        self.assertTrue(np.isfinite(mu).all())
+
+    def test_ridge_rejects_windows_shorter_than_the_lag_count(self):
+        with self.assertRaises(ValueError):
+            estimate_window(self.returns.iloc[:5], forecast_method="ridge")
+
     def test_rejects_unknown_forecast_method(self):
         with self.assertRaises(ValueError):
             estimate_window(self.returns.iloc[:30], forecast_method="unknown")
