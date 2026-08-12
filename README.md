@@ -43,7 +43,14 @@ python backtest.py --csv prices.csv --kind prices --periods 150 --cost-bps 10
 python backtest.py --csv returns.csv --kind returns --forecast-method lag1 --periods 150
 ```
 
-The command does not download data. It keeps the data boundary explicit and lets the same walk-forward code run on a CSV you obtained separately.
+The `backtest.py` command does not download data. To fetch the small public sample used by this project and run it:
+
+```text
+python download_market_data.py
+python backtest.py --csv data/market_prices.csv --kind prices --periods 150 --cost-bps 10
+```
+
+The downloader uses only the Python standard library. It writes an ignored local CSV and does not run during a backtest.
 
 Run all tests:
 
@@ -120,8 +127,29 @@ returns = load_returns_csv("returns.csv", kind="returns")
 print(compare(returns, periods=150))
 ```
 
-Use `kind="prices"` to convert positive price levels to simple returns. The adapter checks dates, numeric values, missing values, and price validity. The repository does not include a downloaded market dataset, so put a CSV obtained separately beside the project or pass its path to the command above. The same walk-forward code then replaces the synthetic input without changing the optimizer.
+Use `kind="prices"` to convert positive price levels to simple returns. The adapter checks dates, numeric values, missing values, and price validity. The repository does not commit raw market data. Use `download_market_data.py` for the documented public sample or pass another local CSV to the command above. The same walk-forward code then replaces the synthetic input without changing the optimizer.
 
+
+## Public sample data
+
+The documented sample comes from [taiwaich/stocks](https://github.com/taiwaich/stocks). Its six files share 419 dates from 2013-11-07 through 2015-07-09. The source README documents adjusted close values, but the repository does not display a license or a stronger redistribution note. The project therefore downloads the files only when requested and keeps the generated CSV ignored. See `data/README.md` for the source details and limitation.
+
+## Public sample run
+
+Using the downloaded six-asset sample, 150 test periods, a 60-day lookback, and 10 bps transaction costs:
+
+```text
+                       buy_and_hold  equal_weight  minimum_variance  single_period  multi_period  rl_policy
+total_net_return              0.1056        0.0723           -0.0393        -0.0292       -0.0293     0.0542
+annualized_return             0.1837        0.1244           -0.0651        -0.0486       -0.0487     0.0928
+annualized_volatility         0.1884        0.1832            0.1547         0.1550        0.1551     0.2331
+sharpe_net                    0.9889        0.7313           -0.3579        -0.2437       -0.2446     0.4961
+max_drawdown                 -0.0824       -0.0813           -0.0799        -0.0806       -0.0805    -0.0941
+mean_turnover                 0.0000        0.0098            0.0394         0.0378        0.0350     0.0111
+total_cost                    0.0000        0.0015            0.0059         0.0057        0.0053     0.0017
+```
+
+This is one historical sample with a short common period. It is a reproducible data-path check, not evidence that any strategy will perform similarly elsewhere.
 
 ## Limitations
 
@@ -133,6 +161,8 @@ The included results use deterministic synthetic returns and are only an impleme
 - `backtest.py`: walk-forward evaluation, six strategy comparisons, transaction-cost accounting, rebalancing control, cost sensitivity, and the local-data CLI.
 - `rl_policy.py`: NumPy REINFORCE-style policy used by the optional RL benchmark.
 - `data.py`: validation and loading for local return or price CSV files.
-- `test_*.py`: 72 offline tests covering the solver, backtest, CSV adapter, forecasting option, and RL path.
+- `download_market_data.py`: standard-library downloader and adjusted-close alignment for the documented public sample.
+- `data/README.md`: source, date coverage, and usage caveat for the downloaded sample.
+- `test_*.py`: 75 offline tests covering the solver, backtest, CSV adapter, downloader helper, forecasting option, and RL path.
 
-The final verification uses Python 3.11.9 with the pinned dependencies in `requirements.txt`. The full test suite, optimizer smoke run, and backtest script all pass.
+The final verification uses Python 3.11.9 with the pinned dependencies in `requirements.txt`. The full 75-test suite, optimizer smoke run, public-sample download, and real-data backtest all pass.
